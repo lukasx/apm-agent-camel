@@ -33,6 +33,7 @@
         <module>apm-redis-plugin</module>
         <module>apm-error-logging-plugin</module>
         <module>apm-jmx-plugin</module>
+        <module>apm-apache-camel-plugin</module>
     </modules>
 
     <properties>
