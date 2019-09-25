@@ -25,33 +25,32 @@
 package co.elastic.apm.agent.camel;
 
 import co.elastic.apm.agent.bci.ElasticApmInstrumentation;
-import co.elastic.apm.agent.impl.transaction.AbstractSpan;
 import co.elastic.apm.agent.impl.transaction.Span;
-import co.elastic.apm.agent.impl.transaction.TraceContext;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
+import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.camel.Exchange;
+import org.apache.camel.Processor;
 
-import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.Collection;
 
-import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
-import static net.bytebuddy.matcher.ElementMatchers.named;
+import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Created by Lukasz on 2019-09-24.
  */
-public class ApacheCamelProcessInstrumentation extends ElasticApmInstrumentation{
+public class ApacheCamelProcessInstrumentation extends ElasticApmInstrumentation {
 
     public static final String PROCESS_SPAN_TYPE = "process";
 
 
     @Override
     public ElementMatcher<? super TypeDescription> getTypeMatcher() {
-        return hasSuperType(named("org.apache.camel.Processor"));
+        return hasSuperType(named("org.apache.camel.Processor"))
+                .and(not(ElementMatchers.<TypeDescription>nameStartsWith("org.apache.camel")));
     }
 
     @Override
@@ -72,26 +71,30 @@ public class ApacheCamelProcessInstrumentation extends ElasticApmInstrumentation
 
     private static class ApacheCamelProcessAdvice {
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        private static void onBeforeProcess(@Advice.Argument(value = 0) Exchange original) {
-            if (tracer == null || original == null) {
+        private static void onBeforeProcess(@Advice.This Processor processor,
+                                            @Advice.Argument(value = 0) Exchange exchange,
+                                            @Advice.Local("span") Span span) {
+
+            if (tracer == null || tracer.getActive() == null) {
                 return;
             }
-            // org.apache.http.HttpMessage#containsHeader implementations do not allocate iterator since 4.0.1
-            if (original.getExchangeId()!= null) {
-                Span span = tracer.getActive().createSpan().activate();
-                StringBuilder spanName = span.getAndOverrideName(AbstractSpan.PRIO_DEFAULT);
-                span.withType(PROCESS_SPAN_TYPE);
-                span.addLabel("exchange", original.getExchangeId());
+            if (exchange.getExchangeId() != null) {
+                span = tracer.currentTransaction().createSpan()
+                    .withType("Processor")
+                    .withSubtype("camel")
+                    .withAction("process")
+                    .withName(processor.getClass().getName());
+
+                span.addLabel("routeFrom", exchange.getFromRouteId());
+                span.addLabel("endpointKey", exchange.getFromEndpoint().getEndpointKey());
+                span.addLabel("endpointUri", exchange.getFromEndpoint().getEndpointUri());
+                span.activate();
             }
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        public static void onAfterExecute(@Advice.Enter @Nullable Span span, @Advice.Thrown Throwable t) {
-            if (span != null) {
-                span.captureException(t)
-                    .deactivate()
-                    .end();
-            }
+        public static void onAfterExecute(@Advice.Thrown Throwable t, @Advice.Local("span") Span span) {
+            span.captureException(t).deactivate().end();
         }
     }
 }
